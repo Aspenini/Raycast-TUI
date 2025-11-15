@@ -145,8 +145,9 @@ impl Raycaster {
             self.last_height = screen_height;
         }
         
-        // Build frame buffer first (using 256-color codes)
-        let mut frame_buffer = vec![vec![0u8; screen_width]; screen_height];
+        // Build frame buffer with double vertical resolution (2 pixels per character)
+        let double_height = screen_height * 2;
+        let mut frame_buffer = vec![vec![0u8; screen_width]; double_height];
         
         // Calculate all columns
         for x in 0..screen_width {
@@ -155,52 +156,66 @@ impl Raycaster {
             
             let perp_wall_dist = self.cast_ray(ray_angle);
             
-            let line_height = (screen_height as f64 / perp_wall_dist.max(0.1)) as usize;
-            let draw_start = ((screen_height as i32 - line_height as i32) / 2).max(0);
-            let draw_end = ((screen_height as i32 + line_height as i32) / 2).min(screen_height as i32);
+            // Use double height for calculations
+            let line_height = (double_height as f64 / perp_wall_dist.max(0.1)) as usize;
+            let draw_start = ((double_height as i32 - line_height as i32) / 2).max(0);
+            let draw_end = ((double_height as i32 + line_height as i32) / 2).min(double_height as i32);
             
             // Get 256-color code for wall based on distance
             let wall_color = self.distance_to_color(perp_wall_dist);
             
-            for y in 0..screen_height {
+            for y in 0..double_height {
                 let y_i32 = y as i32;
                 if y_i32 >= draw_start && y_i32 < draw_end {
                     frame_buffer[y][x] = wall_color;
                 } else if y_i32 < draw_start {
                     // Ceiling - darker gradient based on distance from center
-                    let dist_from_center = (draw_start - y_i32) as f64 / screen_height as f64;
+                    let dist_from_center = (draw_start - y_i32) as f64 / double_height as f64;
                     frame_buffer[y][x] = self.ceiling_color(dist_from_center);
                 } else {
                     // Floor - darker gradient based on distance from center
-                    let dist_from_center = (y_i32 - draw_end) as f64 / screen_height as f64;
+                    let dist_from_center = (y_i32 - draw_end) as f64 / double_height as f64;
                     frame_buffer[y][x] = self.floor_color(dist_from_center);
                 }
             }
         }
         
-        // Build output string with optimized color changes
-        // Use cursor home escape sequence instead of clearing to reduce flicker
-        let mut output = String::with_capacity(screen_width * screen_height * 25);
+        // Build output string using half-block characters for double resolution
+        // Use ▀ (upper half) and ▄ (lower half) to get 2 pixels per character
+        let mut output = String::with_capacity(screen_width * screen_height * 30);
         output.push_str("\x1b[H"); // Move cursor to home (0,0) without clearing
-        let mut current_ansi = 0u8;
+        
+        let mut current_fg = 0u8;
+        let mut current_bg = 0u8;
         
         for y in 0..screen_height {
+            let upper_y = y * 2;
+            let lower_y = y * 2 + 1;
+            
             for x in 0..screen_width {
-                let ansi_code = frame_buffer[y][x];
+                let upper_color = frame_buffer[upper_y][x];
+                let lower_color = if lower_y < double_height {
+                    frame_buffer[lower_y][x]
+                } else {
+                    frame_buffer[upper_y][x] // Fallback if out of bounds
+                };
                 
-                // Only change color when needed
-                if ansi_code != current_ansi {
-                    output.push_str(&format!("\x1b[48;5;{}m", ansi_code));
-                    current_ansi = ansi_code;
+                // Set foreground (upper half) and background (lower half) colors
+                if upper_color != current_fg || lower_color != current_bg {
+                    output.push_str(&format!("\x1b[38;5;{}m\x1b[48;5;{}m", upper_color, lower_color));
+                    current_fg = upper_color;
+                    current_bg = lower_color;
                 }
                 
-                output.push(' ');
+                // Use upper half block character (▀) - shows upper color as foreground, lower as background
+                output.push('▀');
             }
             
             // Reset color at end of line and move to next
             if y < screen_height - 1 {
                 output.push_str("\x1b[0m\r\n");
-                current_ansi = 0;
+                current_fg = 0;
+                current_bg = 0;
             }
         }
         
